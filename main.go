@@ -13,7 +13,7 @@ import (
 func main() {
 	log.Println("🚀 Starting API server...")
 
-	dsn := "jimmy:admin123@tcp(192.168.243.213:3306)/flutterproject"
+	dsn := "jimmy:admin123@tcp(172.20.10.2:3306)/flutterprojecttt?parseTime=true"
 	log.Println("🔌 Connecting to MySQL:", dsn)
 
 	db, err := sql.Open("mysql", dsn)
@@ -27,9 +27,28 @@ func main() {
 	}
 	log.Println("✅ Connected to MySQL database")
 
+	// Init router from user module
 	r := user.InitRouter(db)
-	log.Println("✅ Router initialized")
 
-	log.Println("🌐 Server running at http://localhost:5000")
-	http.ListenAndServe(":5000", r)
+	// ✅ Wrap with CORS middleware
+	handler := corsMiddleware(r)
+
+	log.Println("🌐 Server running at http://0.0.0.0:5000")
+	log.Fatal(http.ListenAndServe("0.0.0.0:5000", handler))
+}
+
+// ✅ Global CORS middleware
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
