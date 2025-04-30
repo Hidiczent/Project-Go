@@ -15,6 +15,9 @@ type UserUsecase interface {
 	GetByEmail(email string) (model.User, error)
 	UpdateEmail(id int64, email string) error
 	UpdatePassword(id int64, hashedPassword string) error
+	IsEmailTaken(email string, excludeID int64) (bool, error)
+	UpdateProfilePhoto(id int64, photoPath string) error // ✅ เพิ่ม
+
 }
 
 type userUsecase struct {
@@ -45,6 +48,15 @@ func (u *userUsecase) UpdateEmail(id int64, email string) error {
 
 	return u.repo.UpdateEmail(id, email)
 }
+
 func (u *userUsecase) UpdatePassword(id int64, hashedPassword string) error {
 	return u.repo.UpdatePassword(id, hashedPassword)
+}
+
+func (u *userUsecase) IsEmailTaken(email string, excludeID int64) (bool, error) {
+	return u.repo.IsEmailTaken(email, excludeID)
+}
+
+func (u *userUsecase) UpdateProfilePhoto(id int64, photoPath string) error {
+	return u.repo.UpdateProfilePhoto(id, photoPath) // ไปเรียกที่ repository ต่อ
 }

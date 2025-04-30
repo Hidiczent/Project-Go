@@ -2,6 +2,7 @@ package repository
 
 import (
 	"database/sql"
+	"log"
 	"myapp/internal/user/model"
 )
 
@@ -15,9 +16,7 @@ type UserRepository interface {
 	UpdateEmail(id int64, email string) error
 	IsEmailTaken(email string, excludeID int64) (bool, error)
 	UpdatePassword(id int64, hashedPassword string) error
-
-
-	
+	UpdateProfilePhoto(id int64, photoPath string) error
 }
 
 type userRepo struct {
@@ -68,8 +67,8 @@ func (r *userRepo) GetByID(id int64) (model.User, error) {
 
 func (r *userRepo) Create(user model.User) error {
 	_, err := r.db.Exec(`
-		INSERT INTO users (first_name, email, password)
-		VALUES (?, ?, ?)`,
+		INSERT INTO users (first_name, email, password, created_at)
+		VALUES (?, ?, ?, NOW())`,
 		user.FirstName, user.Email, user.Password,
 	)
 	return err
@@ -81,6 +80,8 @@ func (r *userRepo) Update(u model.User) error {
 		SET first_name=?, lastname=?, phone_number=?, photo=?, role=?, updated_at=NOW()
 		WHERE user_id=?`,
 		u.FirstName, u.LastName, u.PhoneNumber, u.Photo, u.Role, u.ID)
+	log.Printf("🔥 Update values: fname=%s, lname=%s, phone=%v", u.FirstName, u.LastName, u.PhoneNumber)
+
 	return err
 }
 
@@ -99,22 +100,26 @@ func (r *userRepo) GetByEmail(email string) (model.User, error) {
 	return u, err
 }
 
-//  Update Email
+// Update Email
 func (r *userRepo) UpdateEmail(id int64, email string) error {
 	_, err := r.db.Exec(`UPDATE users SET email = ?, updated_at = NOW() WHERE user_id = ?`, email, id)
 	return err
 }
 
-//  Update Password 
+// Update Password
 func (r *userRepo) UpdatePassword(id int64, hashedPassword string) error {
 	_, err := r.db.Exec(`UPDATE users SET password = ?, updated_at = NOW() WHERE user_id = ?`, hashedPassword, id)
 	return err
 }
 
-// 
 func (r *userRepo) IsEmailTaken(email string, excludeID int64) (bool, error) {
 	var count int
 	err := r.db.QueryRow(`
 		SELECT COUNT(*) FROM users WHERE email = ? AND user_id != ?`, email, excludeID).Scan(&count)
 	return count > 0, err
+}
+
+func (r *userRepo) UpdateProfilePhoto(id int64, photoPath string) error {
+	_, err := r.db.Exec(`UPDATE users SET photo = ?, updated_at = NOW() WHERE user_id = ?`, photoPath, id)
+	return err
 }

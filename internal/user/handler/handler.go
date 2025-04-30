@@ -1,32 +1,43 @@
 package handler
 
 import (
+	"encoding/base64"
 	"encoding/json"
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/gorilla/mux"
-	"golang.org/x/crypto/bcrypt"
+
+	"fmt"
+	"io"
 	"log"
 	"myapp/internal/user/model"
 	"myapp/internal/user/usecase"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/gorilla/mux"
+	"golang.org/x/crypto/bcrypt"
 )
 
 var jwtSecret = []byte("MySuperSecretKey")
 
 type UserHandler struct {
-	Usecase usecase.UserUsecase
+	Usecase    usecase.UserUsecase
+	OTPUsecase usecase.OTPUsecase // ✅ Inject OTPUsecase
 }
 type LoginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 }
 
-func NewUserHandler(u usecase.UserUsecase) *UserHandler {
-	return &UserHandler{Usecase: u}
+func NewUserHandler(userUC usecase.UserUsecase, otpUC usecase.OTPUsecase) *UserHandler {
+	return &UserHandler{
+		Usecase:    userUC,
+		OTPUsecase: otpUC,
+	}
 }
+
 func (h *UserHandler) GetAll(w http.ResponseWriter, r *http.Request) {
 	users, err := h.Usecase.GetAll()
 	if err != nil {
@@ -43,6 +54,7 @@ func (h *UserHandler) GetAll(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(users)
 }
 
+// GetUserByID
 func (h *UserHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	idStr := mux.Vars(r)["id"]
 	id, err := strconv.ParseInt(idStr, 10, 64)
@@ -62,6 +74,8 @@ func (h *UserHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(user)
 }
+
+// CreateUser
 func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 	log.Println("📥 [POST] /users - Create called")
 
@@ -103,11 +117,17 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ✅ ส่ง OTP สำหรับ verify_email
+	if err := h.OTPUsecase.SendOTP(user.Email, "verify_email"); err != nil {
+		log.Printf("⚠️ Failed to send OTP: %v", err)
+		// ไม่ return error เพื่อให้ user ยังใช้งานได้แม้ส่ง OTP ไม่สำเร็จ
+	}
+
 	// ✅ ส่งกลับข้อความสำเร็จ
 	w.WriteHeader(http.StatusCreated)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"message": "✅ User created successfully",
+		"message": "✅ User created successfully. Please verify your email.",
 		"email":   user.Email,
 		"name":    user.FirstName,
 	})
@@ -139,7 +159,6 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 		"message": "User updated successfully",
 	})
 }
-
 func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	idStr := mux.Vars(r)["id"]
 	id, _ := strconv.ParseInt(idStr, 10, 64)
@@ -234,6 +253,9 @@ func (h *UserHandler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to update profile", http.StatusInternalServerError)
 		return
 	}
+	log.Println("📥 Received:", req.FirstName, req.LastName, req.PhoneNumber)
+	log.Println("📝 Updating lastname:", req.LastName)
+	log.Println("📝 Updating phone:", req.PhoneNumber)
 
 	json.NewEncoder(w).Encode(map[string]string{"message": "Profile updated successfully"})
 }
@@ -322,8 +344,256 @@ func (h *UserHandler) UpdatePassword(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to update password", http.StatusInternalServerError)
 		return
 	}
+	log.Printf("📥 Change password for userID: %d", id)
+	log.Printf("🔐 Old: %s | New: %s | Confirm: %s", req.OldPassword, req.NewPassword, req.ConfirmPassword)
 
 	json.NewEncoder(w).Encode(map[string]string{
 		"message": "Password updated successfully",
+	})
+}
+
+// ✅ 4.ResetPassword
+func (h *UserHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email       string `json:"email"`
+		OTP         string `json:"otp"`
+		NewPassword string `json:"new_password"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// ✅ ตรวจสอบ OTP
+	if err := h.OTPUsecase.VerifyOTP(req.Email, req.OTP, "reset_password"); err != nil {
+		http.Error(w, "Invalid or expired OTP", http.StatusUnauthorized)
+		return
+	}
+
+	// ✅ เข้ารหัสรหัสผ่านใหม่
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(w, "Failed to hash password", http.StatusInternalServerError)
+		return
+	}
+
+	// ✅ อัปเดตรหัสผ่านใหม่
+	user, err := h.Usecase.GetByEmail(req.Email)
+	if err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	if err := h.Usecase.UpdatePassword(user.ID, string(hashedPassword)); err != nil {
+		http.Error(w, "Failed to update password", http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "Password reset successfully",
+	})
+}
+
+func (h *UserHandler) UpdateProfilePhoto(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		if err := recover(); err != nil {
+			log.Printf("🔥 Panic in UpdateProfilePhoto: %v\n", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		}
+	}()
+
+	log.Println("🟡 Entered UpdateProfilePhoto handler")
+	log.Printf("🧩 h.Usecase is nil? = %v", h.Usecase == nil)
+
+	// ✅ ดึง user ID จาก token
+	userID, err := getUserIDFromToken(r)
+	if err != nil {
+		log.Printf("❌ Failed to get user ID from token: %v\n", err)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	log.Printf("✅ Extracted user ID: %d\n", userID)
+
+	// ✅ Parse multipart form
+	log.Println("🧩 Parsing multipart form...")
+	err = r.ParseMultipartForm(10 << 20) // 10 MB
+	if err != nil {
+		log.Printf("❌ Error parsing form data: %v\n", err)
+		http.Error(w, "Error parsing form data", http.StatusBadRequest)
+		return
+	}
+
+	file, header, err := r.FormFile("photo")
+	if err != nil {
+		log.Printf("❌ Error reading form file: %v\n", err)
+		http.Error(w, "Photo is required", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	log.Printf("✅ Received photo: filename=%s, size=%d bytes\n", header.Filename, header.Size)
+
+	// ✅ ตรวจสอบโฟลเดอร์ uploads และสร้างถ้ายังไม่มี
+	uploadDir := "uploads"
+	log.Printf("🗂️ Checking upload directory: %s", uploadDir)
+	if _, err := os.Stat(uploadDir); os.IsNotExist(err) {
+		log.Println("📁 Upload directory does not exist, creating...")
+		if err := os.MkdirAll(uploadDir, os.ModePerm); err != nil {
+			log.Printf("❌ Failed to create upload directory: %v\n", err)
+			http.Error(w, "Failed to create uploads folder", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// ✅ ตั้งชื่อไฟล์ใหม่แบบปลอดภัย
+	uploadPath := fmt.Sprintf("%s/user_%d_%s", uploadDir, userID, header.Filename)
+	log.Printf("📤 Saving file to: %s\n", uploadPath)
+
+	dst, err := os.Create(uploadPath)
+	if err != nil {
+		log.Printf("❌ Failed to create file: %v\n", err)
+		http.Error(w, "Failed to save image", http.StatusInternalServerError)
+		return
+	}
+	defer dst.Close()
+
+	_, err = io.Copy(dst, file)
+	if err != nil {
+		log.Printf("❌ Failed to write file: %v\n", err)
+		http.Error(w, "Failed to save image", http.StatusInternalServerError)
+		return
+	}
+
+	// ✅ บันทึก path รูปใน database
+	log.Println("💾 Updating photo path in database...")
+	if err := h.Usecase.UpdateProfilePhoto(userID, uploadPath); err != nil {
+		log.Printf("❌ Failed to update DB: %v\n", err)
+		http.Error(w, "Failed to update profile photo in DB", http.StatusInternalServerError)
+		return
+	}
+
+	// ✅ ตอบกลับเป็น JSON
+	log.Println("✅ Profile photo updated successfully")
+	w.Header().Set("Content-Type", "application/json")
+	err = json.NewEncoder(w).Encode(map[string]string{
+		"message": "✅ Profile photo updated successfully",
+		"path":    uploadPath,
+	})
+	if err != nil {
+		log.Printf("❌ Failed to encode JSON response: %v\n", err)
+	}
+}
+
+func getUserIDFromToken(r *http.Request) (int64, error) {
+	log.Println("🔐 Entered getUserIDFromToken (No verify)")
+
+	authHeader := r.Header.Get("Authorization")
+	log.Printf("🔐 Authorization Header: %s\n", authHeader)
+	if authHeader == "" {
+		return 0, fmt.Errorf("missing authorization header")
+	}
+
+	tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+	log.Printf("🔐 JWT Token string: %s\n", tokenStr)
+
+	parts := strings.Split(tokenStr, ".")
+	if len(parts) != 3 {
+		return 0, fmt.Errorf("invalid token format")
+	}
+
+	payload := parts[1]
+	// base64 decode payload
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		log.Printf("❌ Failed to decode payload: %v\n", err)
+		return 0, fmt.Errorf("invalid payload encoding")
+	}
+
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
+		log.Printf("❌ Failed to unmarshal payload: %v\n", err)
+		return 0, fmt.Errorf("invalid payload json")
+	}
+
+	log.Printf("🧾 Token Claims: %#v\n", claims)
+
+	rawUID := claims["user_id"]
+	log.Printf("👉 [DEBUG] claims[user_id] = %#v (type: %T)\n", rawUID, rawUID)
+
+	uidStr := fmt.Sprintf("%v", rawUID)
+	uidParsed, err := strconv.ParseInt(uidStr, 10, 64)
+	if err != nil {
+		log.Printf("❌ Failed to parse user_id: %v", err)
+		return 0, fmt.Errorf("invalid user_id format")
+	}
+
+	return uidParsed, nil
+}
+
+func (h *OTPHandler) ConfirmRegister(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email  string `json:"email"`
+		Otp    string `json:"otp"`
+		Action string `json:"action"`
+	}
+
+	// ✅ Decode JSON
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON format", http.StatusBadRequest)
+		return
+	}
+
+	// ✅ Validate input
+	if req.Email == "" || req.Otp == "" || req.Action != "register" {
+		http.Error(w, "Missing or invalid fields", http.StatusBadRequest)
+		return
+	}
+
+	// ✅ Verify OTP and fetch metadata
+	otpData, err := h.Usecase.VerifyAndGetMetadata(req.Email, req.Otp, req.Action)
+	if err != nil {
+		http.Error(w, "Invalid or expired OTP", http.StatusUnauthorized)
+		return
+	}
+
+	// ✅ Check if user already exists
+	if _, err := h.UserUsecase.GetByEmail(req.Email); err == nil {
+		http.Error(w, "Email is already registered", http.StatusConflict)
+		return
+	}
+
+	// ✅ Check required metadata fields
+	firstName, ok1 := otpData["first_name"]
+	password, ok2 := otpData["password"]
+	if !ok1 || !ok2 || firstName == "" || password == "" {
+		http.Error(w, "Missing required registration data", http.StatusBadRequest)
+		return
+	}
+
+	// ✅ Hash password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(w, "Failed to hash password", http.StatusInternalServerError)
+		return
+	}
+
+	// ✅ Create user
+	user := model.User{
+		FirstName: firstName,
+		Email:     req.Email,
+		Password:  string(hashedPassword),
+	}
+
+	if err := h.UserUsecase.Create(user); err != nil {
+		http.Error(w, "Failed to create user", http.StatusInternalServerError)
+		return
+	}
+
+	// ✅ Respond success
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "✅ User registered successfully.",
 	})
 }
