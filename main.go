@@ -3,14 +3,12 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"log"
-	user "myapp/internal/user/routes"
-
-	// "myapp/internal/user/routes/otpRoutes"
-	"net/http"
-
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
+	"log"
+	notification "myapp/internal/notification/routes"
+	user "myapp/internal/user/routes"
+	"net/http"
 )
 
 func main() {
@@ -38,6 +36,7 @@ func main() {
 
 	// Init router from user module
 	r := user.InitRouter(db)
+	notification.RegisterNotificationRoutes(r, db) // ✅ เพิ่มตรงนี้
 
 	// ✅ Wrap with CORS middleware
 	handler := corsMiddleware(r)
